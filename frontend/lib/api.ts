@@ -32,9 +32,16 @@ export function clearCreds() {
 }
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string, public code?: string) {
+  constructor(public status: number, message: string) {
     super(message);
   }
+}
+
+// FastAPI errors: our own { message }, HTTPException's { detail: "..." }, or validation's { detail: [{ msg }] }.
+function errorMessage(data: { message?: string; detail?: string | { msg?: string }[] }): string {
+  if (data.message) return data.message;
+  if (typeof data.detail === "string") return data.detail;
+  return data.detail?.[0]?.msg ?? "Request failed";
 }
 
 export async function api<T>(path: string, opts: { method?: string; body?: unknown; token?: string } = {}): Promise<T> {
@@ -48,8 +55,7 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = data.message ?? (typeof data.detail === "string" ? data.detail : "Request failed");
-    throw new ApiError(res.status, msg, data.code);
+    throw new ApiError(res.status, errorMessage(data));
   }
   return data as T;
 }

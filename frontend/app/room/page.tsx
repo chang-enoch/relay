@@ -1,7 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Brand } from "@/components/Brand";
+import { Brand, RelayMark } from "@/components/Brand";
 import { AskRelayPanel } from "@/components/AskRelayPanel";
 import { MessageCard } from "@/components/MessageCard";
 import { Avatar, byId } from "@/components/util";
@@ -111,7 +111,7 @@ export default function RoomPage() {
   const canManage = me.permissions.includes("manage_requests");
   const others = snap.participants.filter((p) => p.id !== snap.me);
   const allMuted = others.length > 0 && others.every((p) => room.muted.has(p.id));
-  const lastWarning = room.notices.filter((n) => n.level === "warning").at(-1);
+  const lastWarning = room.notices.at(-1);
 
   const pills: [string, string, string | undefined][] = [
     ["Server", room.connected ? "ok" : "error", room.connected ? undefined : "Reconnecting to Relay"],
@@ -218,7 +218,7 @@ export default function RoomPage() {
                 ) : (
                   <div key={item.c.id} className="flex items-start gap-4 rounded-xl border border-dashed border-line px-4 py-3 sm:px-5">
                     <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-sage">
-                      <svg width="14" height="18" viewBox="0 0 20 26" aria-hidden><rect x="0" y="6" width="5" height="14" rx="2.5" fill="var(--moss)" /><rect x="7.5" y="0" width="5" height="26" rx="2.5" fill="var(--moss)" /><rect x="15" y="5" width="5" height="16" rx="2.5" fill="var(--moss)" /></svg>
+                      <RelayMark width={14} height={18} />
                     </span>
                     <div className="min-w-0">
                       <p className="text-sm"><span className="font-bold">Relay</span> <span className="text-muted">asks {item.c.participant_id === snap.me ? "you" : people[item.c.participant_id]?.display_name}</span></p>
@@ -251,7 +251,7 @@ export default function RoomPage() {
               <div className="fixed inset-x-3 bottom-28 top-20 z-20 lg:static lg:inset-auto lg:z-auto lg:w-96 lg:shrink-0 lg:pb-6">
                 <AskRelayPanel exchange={exchange} pending={room.openExchange === "new"} interim={room.askInterim}
                   asking={room.asking} messages={snap.messages} people={people} history={snap.exchanges}
-                  onClose={() => room.setOpenExchange(null)} onShare={room.share} onPlay={room.playAnswer} onJump={jump}
+                  onClose={() => room.setOpenExchange(null)} onShare={room.share} onPlay={room.playAnswer} hasAudio={!!exchange && exchange.id in room.answerAudio} onJump={jump}
                   onToggleAsk={room.toggleAsk} onType={(t) => room.sendText(t, "ask")} onPick={room.setOpenExchange} micReady={room.micReady} />
               </div>
             )}

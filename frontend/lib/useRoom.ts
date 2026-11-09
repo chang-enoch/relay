@@ -1,19 +1,19 @@
 "use client";
 // Room state: snapshot + live events over the websocket, with reconnect that reloads
-// missed events after the last sequence. Also owns push-to-talk and assistant playback.
+// missed events after the last sequence. Also owns push-to-talk and Ask Relay playback.
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { api, Creds, WS_URL } from "./api";
 import { joinLiveKit, AudioState, LiveKitSession } from "./livekit";
 import { FRAME_MS, Mic, startMic } from "./mic";
+import type { Clarification, ComponentState, Exchange, Message, Participant, Req, RequestEvent, ServerEvent, Snapshot, TurnState } from "./types";
 
 type Mode = "team" | "ask";
 const TAG: Record<Mode, number> = { team: 1, ask: 2 };
 const PREROLL_MS = 300; // audio kept from just before the press, so the first word isn't clipped
 const TAIL_MS = 300; // keep capturing briefly after release, so the last word isn't clipped
 const MAX_PENDING_FRAMES = (10_000 / FRAME_MS) | 0; // cap buffering while waiting for a turn
-import type { ComponentState, Exchange, Message, Participant, Req, RequestEvent, ServerEvent, Snapshot, TurnState } from "./types";
 
-export interface Notice { id: number; text: string; level: string }
+export interface Notice { id: number; text: string }
 
 interface State {
   snap: Snapshot | null;
@@ -23,6 +23,7 @@ interface State {
   status: Record<"transcription" | "ai" | "speech", { state: ComponentState; detail?: string }>;
   notices: Notice[];
   openExchange: string | null;
+  answerAudio: Record<string, string>; // exchange id -> spoken answer (base64 mp3)
   closed: boolean;
 }
 
@@ -30,9 +31,9 @@ type Action =
   | { t: "snapshot"; snap: Snapshot }
   | { t: "event"; e: ServerEvent }
   | { t: "dismiss"; id: number }
-  | { t: "notice"; text: string; level?: string }
+  | { t: "notice"; text: string }
   | { t: "openExchange"; id: string | null }
-  | { t: "exchangeAudio"; id: string; audio: string };
+  | { t: "answerAudio"; id: string; audio: string };
 
 let noticeId = 0;
 const upsert = <T extends { id: string }>(list: T[], item: T) =>
@@ -54,7 +55,7 @@ function applyPersisted(snap: Snapshot, e: ServerEvent): [Snapshot, Partial<Stat
       s.requests = upsert(s.requests, r);
       const ev: RequestEvent = {
         request_id: r.id, actor_id: p.change.actor_id, origin: p.change.origin, type: p.change.type,
-        timestamp: (e as any).timestamp ?? new Date().toISOString(), sequence: e.sequence ?? 0, // eslint-disable-line @typescript-eslint/no-explicit-any
+        timestamp: e.timestamp ?? new Date().toISOString(), sequence: e.sequence ?? 0,
         source_message_id: p.change.source_message_id,
       };
       s.request_events = [...s.request_events, ev];
@@ -65,7 +66,7 @@ function applyPersisted(snap: Snapshot, e: ServerEvent): [Snapshot, Partial<Stat
       s.participants = upsert(s.participants, p.participant as Participant);
       break;
     case "clarification.created":
-      s.clarifications = upsert(s.clarifications, p as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+      s.clarifications = upsert(s.clarifications, p as Clarification);
       break;
     case "clarification.resolved":
       s.clarifications = s.clarifications.filter((c) => !(p.ids as string[]).includes(c.id));
@@ -89,12 +90,11 @@ function reducer(state: State, a: Action): State {
     case "dismiss":
       return { ...state, notices: state.notices.filter((n) => n.id !== a.id) };
     case "notice":
-      return { ...state, notices: [...state.notices, { id: ++noticeId, text: a.text, level: a.level ?? "warning" }] };
+      return { ...state, notices: [...state.notices, { id: ++noticeId, text: a.text }] };
     case "openExchange":
       return { ...state, openExchange: a.id };
-    case "exchangeAudio":
-      if (!state.snap) return state;
-      return { ...state, snap: { ...state.snap, exchanges: state.snap.exchanges.map((x) => (x.id === a.id ? { ...x, audio: a.audio } : x)) } };
+    case "answerAudio":
+      return { ...state, answerAudio: { ...state.answerAudio, [a.id]: a.audio } };
     case "event": {
       const e = a.e;
       if (!state.snap) return state;
@@ -104,7 +104,7 @@ function reducer(state: State, a: Action): State {
         let activity = state.activity;
         const author = e.type === "message.created" ? e.payload.message?.participant_id : null;
         if (author && activity[author]) { activity = { ...activity }; delete activity[author]; }
-        return { ...state, ...extra, activity, notices: [...state.notices, ...(extra.notices ?? [])], snap };
+        return { ...state, ...extra, activity, snap };
       }
       const p = e.payload;
       switch (e.type) {
@@ -131,7 +131,7 @@ function reducer(state: State, a: Action): State {
         case "status":
           return { ...state, status: { ...state.status, [p.component]: { state: p.state, detail: p.detail } } };
         case "notice":
-          return { ...state, notices: [...state.notices, { id: ++noticeId, text: p.text, level: p.level }] };
+          return { ...state, notices: [...state.notices, { id: ++noticeId, text: p.text }] };
         case "presence":
           return { ...state, snap: { ...state.snap, participants: state.snap.participants.map((x) => (x.id === p.participant_id ? { ...x, online: p.online } : x)) } };
         case "session.closed":
@@ -143,7 +143,7 @@ function reducer(state: State, a: Action): State {
 }
 
 const initial: State = {
-  snap: null, activity: {}, askInterim: "", notices: [], openExchange: null, closed: false,
+  snap: null, activity: {}, askInterim: "", notices: [], openExchange: null, answerAudio: {}, closed: false,
   status: { transcription: { state: "unknown" }, ai: { state: "unknown" }, speech: { state: "unknown" } },
 };
 
@@ -176,18 +176,16 @@ export function useRoom(creds: Creds | null) {
   const capture = useRef<{ team: boolean; ask: boolean }>({ team: false, ask: false });
   const holding = useRef<{ team: boolean; ask: boolean }>({ team: false, ask: false });
   const player = useRef<HTMLAudioElement | null>(null);
-  const playing = useRef<{ kind: "announcement" | "answer"; id: string } | null>(null);
-  const announceQueue = useRef<{ id: string; audio: string }[]>([]);
+  type Clip = { id: string; audio: string };
+  const playing = useRef<Clip | null>(null);
+  const pendingAnswer = useRef<Clip | null>(null); // held back while a teammate speaks
   const speakerRef = useRef<string | null>(null);
-  const pendingAnswer = useRef<{ id: string; audio: string } | null>(null);
-  const answerAudio = useRef<Record<string, string>>({});
   const preroll = useRef<ArrayBuffer[]>([]);
   const pending = useRef<Record<Mode, ArrayBuffer[]>>({ team: [], ask: [] });
   const credsRef = useRef<Creds | null>(creds);
   const replaying = useRef(false);
   const replayAgain = useRef(false);
   useEffect(() => { credsRef.current = creds; }, [creds]);
-  const playRef = useRef<(kind: "announcement" | "answer", id: string, b64: string) => void>(() => {});
 
   useEffect(() => {
     speakerRef.current = state.snap?.turn.speaker?.participant_id ?? null;
@@ -206,35 +204,21 @@ export function useRoom(creds: Creds | null) {
     s.send(frame);
   }, []);
 
-  // ---------------------------------------------------------------- playback
-  const stopPlayback = useCallback((interrupted: boolean) => {
-    const cur = playing.current;
-    if (!cur || !player.current) return;
-    player.current.pause();
-    if (cur.kind === "announcement") send({ type: "announcement.state", id: cur.id, state: interrupted ? "interrupted" : "played" });
+  // ---------------------------------------------------------------- playback (Ask Relay answers)
+  const stopPlayback = useCallback(() => {
+    player.current?.pause();
     playing.current = null;
-  }, [send]);
+  }, []);
 
-  const play = useCallback((kind: "announcement" | "answer", id: string, b64: string) => {
+  const play = useCallback((clip: Clip) => {
     if (!player.current) player.current = new Audio();
-    stopPlayback(true);
+    stopPlayback();
     const el = player.current;
-    el.src = `data:audio/mpeg;base64,${b64}`;
-    playing.current = { kind, id };
-    el.onended = () => {
-      if (playing.current?.id === id) {
-        if (kind === "announcement") send({ type: "announcement.state", id, state: "played" });
-        playing.current = null;
-        const next = announceQueue.current.shift();
-        if (next) playRef.current("announcement", next.id, next.audio);
-      }
-    };
-    el.play().catch(() => {
-      if (kind === "announcement") send({ type: "announcement.state", id, state: "interrupted" });
-      playing.current = null;
-    });
-  }, [send, stopPlayback]);
-  useEffect(() => { playRef.current = play; }, [play]);
+    el.src = `data:audio/mpeg;base64,${clip.audio}`;
+    playing.current = clip;
+    el.onended = () => { if (playing.current?.id === clip.id) playing.current = null; };
+    el.play().catch(() => { playing.current = null; });
+  }, [stopPlayback]);
 
   // ---------------------------------------------------------------- events & socket
   // Fetch every event after our last sequence. Global sequences include other people's
@@ -254,8 +238,9 @@ export function useRoom(creds: Creds | null) {
           if (e.sequence) seqRef.current = Math.max(seqRef.current, e.sequence);
         }
       } while (replayAgain.current);
-    } catch {
-      // Next event or reconnect will retry.
+    } catch (err) {
+      // A 401 means the room is gone: let the caller close it. Otherwise the next event or reconnect retries.
+      if ((err as { status?: number }).status === 401) throw err;
     } finally {
       replaying.current = false;
     }
@@ -265,7 +250,7 @@ export function useRoom(creds: Creds | null) {
     if (!e.ephemeral && e.sequence) {
       if (e.sequence > seqRef.current + 1) {
         // Gap: replay everything after our last sequence (it includes this event).
-        void replay();
+        replay().catch(() => {}); // a deleted room also closes this socket with 4401
         return;
       }
       seqRef.current = Math.max(seqRef.current, e.sequence);
@@ -273,16 +258,11 @@ export function useRoom(creds: Creds | null) {
     if (e.type === "turn.state") {
       if (e.payload.speaker && playing.current) {
         // Answer speech yields to team audio; replay it once the channel clears.
-        if (playing.current.kind === "answer") {
-          const id = playing.current.id;
-          const audio = answerAudio.current[id];
-          if (audio) pendingAnswer.current = { id, audio };
-        }
-        stopPlayback(true);
+        pendingAnswer.current = playing.current;
+        stopPlayback();
       } else if (!e.payload.speaker && pendingAnswer.current) {
-        const { id, audio } = pendingAnswer.current;
+        play(pendingAnswer.current);
         pendingAnswer.current = null;
-        play("answer", id, audio);
       }
     }
     if (e.type === "turn.granted") {
@@ -305,19 +285,12 @@ export function useRoom(creds: Creds | null) {
       capture.current[mode] = false;
       if (mode === "team") { setTalk("idle"); lk.current?.track.mute(); } else setAsking("idle");
     }
-    if (e.type === "announcement" && e.payload.audio) {
-      // Only arrives if the server has spoken announcements enabled.
-      if (speakerRef.current) send({ type: "announcement.state", id: e.payload.notification_id, state: "interrupted" });
-      else if (playing.current) announceQueue.current.push({ id: e.payload.notification_id, audio: e.payload.audio });
-      else play("announcement", e.payload.notification_id, e.payload.audio);
-    }
     if (e.type === "ask.audio") {
       // Ask Relay answers speak automatically, but never over a teammate.
-      const { exchange_id: id, audio } = e.payload;
-      answerAudio.current[id] = audio;
-      dispatch({ t: "exchangeAudio", id, audio });
-      if (speakerRef.current) pendingAnswer.current = { id, audio };
-      else play("answer", id, audio);
+      const clip = { id: e.payload.exchange_id, audio: e.payload.audio };
+      dispatch({ t: "answerAudio", ...clip });
+      if (speakerRef.current) pendingAnswer.current = clip;
+      else play(clip);
     }
     dispatch({ t: "event", e });
   }, [play, send, sendFrame, stopPlayback, replay]);
@@ -350,7 +323,7 @@ export function useRoom(creds: Creds | null) {
       sock.onopen = () => {
         attempt = 0;
         setConnected(true);
-        void replay(); // catch anything committed between the snapshot and this socket opening
+        replay().catch(() => {}); // catch anything committed between the snapshot and this socket opening
       };
       sock.onmessage = (m) => { if (typeof m.data === "string") handle(JSON.parse(m.data)); };
       sock.onclose = (ev) => {
@@ -475,7 +448,6 @@ export function useRoom(creds: Creds | null) {
     if (!creds) return;
     try {
       await api(`/sessions/${creds.session_id}/answers/${exchangeId}/share`, { method: "POST", token: creds.token });
-      dispatch({ t: "notice", text: "Answer shared to the room.", level: "info" });
     } catch (err) {
       dispatch({ t: "notice", text: (err as Error).message });
     }
@@ -490,7 +462,7 @@ export function useRoom(creds: Creds | null) {
   return {
     ...state, connected, audio, micReady, micLevel, talk, asking, muted, setMuted,
     enableMic, pressTalk, releaseTalk, toggleAsk, sendText, action, share, deleteRoom,
-    playAnswer: (x: Exchange) => x.audio && play("answer", x.id, x.audio),
+    playAnswer: (id: string) => { const audio = state.answerAudio[id]; if (audio) play({ id, audio }); },
     dismiss: (id: number) => dispatch({ t: "dismiss", id }),
     setOpenExchange: (id: string | null) => dispatch({ t: "openExchange", id }),
   };

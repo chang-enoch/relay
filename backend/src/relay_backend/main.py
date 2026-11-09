@@ -18,7 +18,8 @@ from . import config
 from .db import Database, dumps, new_id, now, purge_expired, row_dict
 from .hub import Connection, Hub
 from .pipeline import App, ephemeral, handle_utterance, share_answer
-from .requests_engine import ALL_PERMISSIONS, ActionError, Actor, Context, VersionConflict, execute, public_participant, public_request
+from .requests_engine import ALL_PERMISSIONS, ActionError, Actor, Context, execute, public_participant, public_request
+from .state import serialize_message
 
 log = logging.getLogger("relay")
 CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -57,15 +58,8 @@ class RateLimiter:
         return True
 
 
-def serialize_message(db: Database, row) -> dict:
-    m = row_dict(row, ("request_ids",))
-    if m["kind"] == "shared_answer" and m["shared_answer_id"]:
-        ex = db.one("SELECT source_message_ids, created_at FROM bot_exchanges WHERE id = ?",
-                    (m["shared_answer_id"],))
-        if ex:
-            m["sources"] = json.loads(ex["source_message_ids"])
-            m["generated_at"] = ex["created_at"]
-    return m
+def client_key(request: Request) -> str:
+    return request.client.host if request.client else "?"
 
 
 def create_app(db_path: str | None = None) -> FastAPI:
@@ -76,10 +70,11 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        if not logging.getLogger().handlers:  # uvicorn only configures its own loggers
+            logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(name)s: %(message)s")
         purged = purge_expired(db.conn, config.RETENTION_DAYS)
         if purged:
             log.info("purged %d expired sessions", purged)
-        db.conn.execute("UPDATE participants SET connection_state = 'offline'")
         missing = config.missing_keys()
         if missing:
             log.warning("Missing provider keys (set them in backend/.env): %s", ", ".join(missing))
@@ -97,8 +92,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     async def auth(session_id: str, authorization: str = Header(default="")) -> Actor:
         token = authorization.removeprefix("Bearer ").strip()
-        row = db.one("SELECT p.* FROM participants p JOIN sessions s ON s.id = p.session_id"
-                     " WHERE p.authenticated_subject = ? AND p.session_id = ? AND s.closed_at IS NULL",
+        row = db.one("SELECT * FROM participants WHERE authenticated_subject = ? AND session_id = ?",
                      (hash_token(token), session_id)) if token else None
         if row is None:
             raise HTTPException(401, "Invalid or expired credentials for this room.")
@@ -120,7 +114,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     @app.post("/sessions")
     async def create_session(body: CreateBody, request: Request):
-        if not joins.allow(request.client.host if request.client else "?"):
+        if not joins.allow(client_key(request)):
             raise HTTPException(429, "Too many attempts. Wait a minute and try again.")
         with db.tx() as tx:
             for _ in range(20):
@@ -138,11 +132,11 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     @app.post("/sessions/join")
     async def join_session(body: JoinBody, request: Request):
-        if not joins.allow(request.client.host if request.client else "?"):
+        if not joins.allow(client_key(request)):
             raise HTTPException(429, "Too many join attempts. Wait a minute and try again.")
         code = body.room_code.strip().upper()
         session = db.one("SELECT * FROM sessions WHERE room_code = ?", (code,))
-        if session is None or session["closed_at"]:
+        if session is None:
             raise HTTPException(404, "That room code is invalid or the room has closed.")
         with db.tx() as tx:
             participant, token = add_participant(tx, session["id"], body.name, body.role, [])
@@ -199,52 +193,49 @@ def create_app(db_path: str | None = None) -> FastAPI:
                       (session_id, after, actor.id))
         return {"events": [row_dict(r, ("payload",)) for r in rows]}
 
+    # Manual actions don't take the room lock: execute() is synchronous, so it can't interleave
+    # with another commit, and a voice turn mid-interpretation retries on a version conflict.
     @app.post("/sessions/{session_id}/actions")
     async def actions(session_id: str, body: dict, actor: Actor = Depends(auth)):
-        room = relay.room(session_id)
-        async with room.lock:
-            with db.tx() as tx:
-                result = execute(tx, actor, body, Context(origin="manual",
-                                                         source_message_id=None))
-        for note in result.get("announcements", []):
-            room.announce(note)
-        return result
+        with db.tx() as tx:
+            return execute(tx, actor, body, Context(origin="manual"))
 
     @app.post("/sessions/{session_id}/answers/{exchange_id}/share")
     async def share(session_id: str, exchange_id: str, actor: Actor = Depends(auth)):
-        async with relay.room(session_id).lock:
-            message = share_answer(relay, session_id, actor.id, exchange_id)
-        return {"message": message if isinstance(message, dict) else serialize_message(db, message)}
+        return {"message": share_answer(relay, session_id, actor.id, exchange_id)}
 
     @app.delete("/sessions/{session_id}")
     async def delete_session(session_id: str, actor: Actor = Depends(auth)):
         if not actor.can("delete_session"):
             raise HTTPException(403, "You don't have permission to delete this room.")
-        hub.send(session_id, ephemeral("session.closed", {}))
-        await asyncio.sleep(0.1)
+        room = relay.rooms.pop(session_id, None)
+        if room:
+            async with room.lock:  # let a commit in progress finish, then stop everything else
+                await room.close()
         db.conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
-        relay.rooms.pop(session_id, None)
+        hub.send(session_id, ephemeral("session.closed", {}))
+        hub.close_session(session_id)
         return {"ok": True}
 
     @app.websocket("/sessions/{session_id}/stream")
     async def stream(ws: WebSocket, session_id: str, token: str = Query(default="")):
+        await ws.accept()  # accept first: a close before accept never reaches the browser's code
         try:
             actor = await auth(session_id, f"Bearer {token}")
         except HTTPException:
-            await ws.close(code=4401)
+            await ws.close(code=4401)  # the client stops reconnecting on this code
             return
-        await ws.accept()
         room = relay.room(session_id)
         conn = Connection(session_id, actor.id)
         hub.add(conn)
         room.connected(actor.id)
-        db.conn.execute("UPDATE participants SET connection_state = 'online' WHERE id = ?", (actor.id,))
         hub.send(session_id, ephemeral("presence", {"participant_id": actor.id, "online": True}))
         conn.queue.put_nowait(ephemeral("turn.state", room.floor.public()))
 
         async def sender():
-            while True:
-                await ws.send_json(await conn.queue.get())
+            while (msg := await conn.queue.get()) is not None:
+                await ws.send_json(msg)
+            await ws.close(code=4401)  # room deleted
 
         send_task = asyncio.create_task(sender())
         try:
@@ -269,8 +260,6 @@ def create_app(db_path: str | None = None) -> FastAPI:
                     room.release_turn(actor.id, control.get("mode"))
                 elif kind == "turn.cancel":
                     room.cancel_turn(actor.id)
-                elif kind == "announcement.state":
-                    room.announcement_feedback(str(control.get("id")), str(control.get("state")))
                 elif kind == "utterance.text":
                     # Typed fallback: same pipeline, same identity, its own turn id.
                     text = str(control.get("text") or "")[:2000]
@@ -285,7 +274,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
             hub.remove(conn)
             if actor.id not in hub.connected_ids(session_id):
                 db.conn.execute(
-                    "UPDATE participants SET connection_state = 'offline', last_seen_sequence ="
+                    "UPDATE participants SET last_seen_sequence ="
                     " (SELECT event_seq FROM sessions WHERE id = ?) WHERE id = ?", (session_id, actor.id))
                 hub.send(session_id, ephemeral("presence", {"participant_id": actor.id, "online": False}))
                 room.disconnected(actor.id)
@@ -299,5 +288,4 @@ app = create_app()
 def main() -> None:
     import uvicorn
 
-    logging.basicConfig(level=logging.INFO)
     uvicorn.run("relay_backend.main:app", host="127.0.0.1", port=8000)

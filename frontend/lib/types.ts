@@ -7,7 +7,6 @@ export interface Participant {
   role: string;
   permissions: string[];
   online?: boolean;
-  connection_state?: string;
 }
 
 export interface Message {
@@ -66,7 +65,6 @@ export interface Exchange {
   source_message_ids: string[];
   created_at: string;
   shared_message_id: string | null;
-  audio?: string;
 }
 
 export interface Clarification {
@@ -103,5 +101,6 @@ export interface ServerEvent {
   type: string;
   payload: Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
   sequence?: number;
+  timestamp?: string;
   ephemeral?: boolean;
 }

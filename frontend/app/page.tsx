@@ -4,8 +4,6 @@ import { useState } from "react";
 import { Brand } from "@/components/Brand";
 import { api, Creds, saveCreds } from "@/lib/api";
 
-type Result = Creds & { room_code: string };
-
 export default function Home() {
   const router = useRouter();
   const [create, setCreate] = useState({ name: "", role: "", room_name: "", setting: "" });
@@ -18,8 +16,8 @@ export default function Home() {
     setError(null);
     try {
       const r = which === "create"
-        ? await api<Result>("/sessions", { body: { ...create, room_name: create.room_name || `${create.name}'s room` } })
-        : await api<Result>("/sessions/join", { body: join });
+        ? await api<Creds>("/sessions", { body: { ...create, room_name: create.room_name || `${create.name}'s room` } })
+        : await api<Creds>("/sessions/join", { body: join });
       saveCreds(r);
       router.push("/room");
     } catch (err) {
@@ -45,14 +43,14 @@ export default function Home() {
             <h2 className="text-2xl font-bold">Start a room</h2>
             <p className="mt-1 text-muted">Create a code. Bring your team together.</p>
             <div className="mt-6 grid gap-4 sm:grid-cols-2">
-              <Field label="Your name" value={create.name} onChange={(v) => setCreate({ ...create, name: v })} placeholder="Your name" />
-              <Field label="Your role" value={create.role} onChange={(v) => setCreate({ ...create, role: v })} placeholder="Describe your role" />
+              <Field label="Your name" value={create.name} onChange={(v) => setCreate({ ...create, name: v })} placeholder="Your name" max={60} />
+              <Field label="Your role" value={create.role} onChange={(v) => setCreate({ ...create, role: v })} placeholder="Describe your role" max={60} />
             </div>
             <div className="mt-4">
-              <Field label="Room name · optional" value={create.room_name} onChange={(v) => setCreate({ ...create, room_name: v })} placeholder="Evening production" />
+              <Field label="Room name · optional" value={create.room_name} onChange={(v) => setCreate({ ...create, room_name: v })} placeholder="Evening production" max={80} />
             </div>
             <div className="mt-4">
-              <Field label="Room setting · optional" value={create.setting} onChange={(v) => setCreate({ ...create, setting: v })} placeholder="What is your team working on?" />
+              <Field label="Room setting · optional" value={create.setting} onChange={(v) => setCreate({ ...create, setting: v })} placeholder="What is your team working on?" max={500} />
             </div>
             <button className="btn btn-primary mt-6 w-full py-3 text-left" disabled={!canCreate || busy !== null}>
               {busy === "create" ? "Creating…" : "Create room →"}
@@ -64,11 +62,11 @@ export default function Home() {
             <h2 className="text-2xl font-bold">Join your team</h2>
             <p className="mt-1 text-muted">Have a room code? You&apos;re almost there.</p>
             <div className="mt-6">
-              <Field label="Room code" value={join.room_code} onChange={(v) => setJoin({ ...join, room_code: v.toUpperCase() })} placeholder="ABC123" mono />
+              <Field label="Room code" value={join.room_code} onChange={(v) => setJoin({ ...join, room_code: v.toUpperCase() })} placeholder="ABC123" max={12} mono />
             </div>
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
-              <Field label="Your name" value={join.name} onChange={(v) => setJoin({ ...join, name: v })} placeholder="Your name" />
-              <Field label="Your role" value={join.role} onChange={(v) => setJoin({ ...join, role: v })} placeholder="Describe your role" />
+              <Field label="Your name" value={join.name} onChange={(v) => setJoin({ ...join, name: v })} placeholder="Your name" max={60} />
+              <Field label="Your role" value={join.role} onChange={(v) => setJoin({ ...join, role: v })} placeholder="Describe your role" max={60} />
             </div>
             <button className="btn mt-6 w-full py-3 text-left" disabled={!canJoin || busy !== null}>
               {busy === "join" ? "Joining…" : "Join room →"}
@@ -90,14 +88,15 @@ export default function Home() {
   );
 }
 
-function Field({ label, value, onChange, placeholder, mono }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder: string; mono?: boolean;
+// max mirrors the backend's field limits, so a value the server would reject can't be typed.
+function Field({ label, value, onChange, placeholder, max, mono }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder: string; max: number; mono?: boolean;
 }) {
   return (
     <label className="block">
       <span className="label">{label}</span>
       <input className={`field mt-2 ${mono ? "tracking-[0.3em] uppercase" : ""}`} value={value}
-        onChange={(e) => onChange(e.target.value)} placeholder={placeholder} maxLength={mono ? 12 : 80} />
+        onChange={(e) => onChange(e.target.value)} placeholder={placeholder} maxLength={max} />
     </label>
   );
 }

@@ -1,6 +1,7 @@
-"""Room runtime: turns + audio routing, the utterance pipeline, and shared announcements.
+"""Room runtime (turns + audio routing) and the utterance pipeline.
 
-finalised utterance -> dedupe (participant, turn) -> LLM -> engine -> commit -> optional speech.
+finalised utterance -> dedupe (participant, turn) -> LLM -> engine -> commit.
+Questions go to a read-only route whose answer is spoken back to the asker only.
 Any transcription or reasoning failure leaves state unchanged and tells the speaker privately.
 """
 
@@ -12,7 +13,7 @@ import sqlite3
 from datetime import UTC, datetime, timedelta
 
 from . import config, llm, state, stt, tts
-from .db import Database, Tx, dumps, new_id, now
+from .db import Database, Tx, dumps, iso, new_id, now
 from .hub import Hub
 from .requests_engine import ActionError, Actor, Context, VersionConflict, execute
 from .turns import Floor, Turn
@@ -28,22 +29,17 @@ class Room:
     def __init__(self, app: "App", session_id: str):
         self.app = app
         self.session_id = session_id
-        self.lock = asyncio.Lock()  # serialises interpretation + mutation for the room
+        self.lock = asyncio.Lock()  # serialises team interpretation + commit for the room
         self.floor = Floor()
-        self.floor_free = asyncio.Event()
-        self.floor_free.set()
         self.leases: dict[str, asyncio.Task] = {}
-        self.announcements: list[tuple[dict, int]] = []  # (notification, attempts)
-        self.announcer: asyncio.Task | None = None
         self.tasks: set[asyncio.Task] = set()
-        self.repeated: set[str] = set()
 
     # ------------------------------------------------------------ helpers
     def send(self, msg: dict, to: str = "shared") -> None:
         self.app.hub.send(self.session_id, msg, to)
 
-    def notice(self, pid: str, text: str, level: str = "warning") -> None:
-        self.send(ephemeral("notice", {"text": text, "level": level}), pid)
+    def notice(self, pid: str, text: str) -> None:
+        self.send(ephemeral("notice", {"text": text}), pid)
 
     def status(self, pid: str | None, component: str, ok: bool, detail: str = "") -> None:
         self.send(ephemeral("status", {"component": component, "state": "ok" if ok else "error",
@@ -56,10 +52,6 @@ class Room:
         return task
 
     def broadcast_floor(self) -> None:
-        if self.floor.speaker is None:
-            self.floor_free.set()
-        else:
-            self.floor_free.clear()
         self.send(ephemeral("turn.state", self.floor.public()))
 
     # ------------------------------------------------------------ turns
@@ -143,64 +135,14 @@ class Room:
                 self.release_turn(pid, process=False)
             self.leases[pid] = self.spawn(expire())
 
-    # ------------------------------------------------------------ announcements
-    def announce(self, notification: dict, attempts: int = 0) -> None:
-        if not config.SPEAK_ANNOUNCEMENTS:
-            return  # text-only: the change or question is already visible in the feed
-        self.announcements.append((notification, attempts))
-        if self.announcer is None or self.announcer.done():
-            self.announcer = self.spawn(self._announce_loop())
-
-    async def _announce_loop(self) -> None:
-        while self.announcements:
-            await self.floor_free.wait()  # shared announcements wait for a clear channel
-            note, attempts = self.announcements.pop(0)
-            if self._superseded(note):
-                self._set_delivery(note["id"], "superseded")
-                continue
-            audio = None
-            try:
-                audio = base64.b64encode(await tts.synthesize(note["message"])).decode()
-                self.status(None, "speech", True)
-            except Exception as e:  # noqa: BLE001
-                log.warning("speech failed: %s", e)
-                self.status(None, "speech", False, str(e))
-            if not self.floor_free.is_set():  # someone grabbed the floor meanwhile
-                self.announcements.insert(0, (note, attempts))
-                continue
-            self._set_delivery(note["id"], "playing" if audio else "failed")
-            self.send(ephemeral("announcement", {
-                "notification_id": note["id"], "text": note["message"], "audio": audio,
-                "attempts": attempts}))
-            await asyncio.sleep(0.2)
-
-    def _superseded(self, note: dict) -> bool:
-        if not note.get("request_id"):
-            return False
-        row = self.app.db.one("SELECT instruction_revision, status FROM requests WHERE id = ?",
-                              (note["request_id"],))
-        return row is None or row["status"] in ("completed", "cancelled") or (
-            note.get("instruction_revision") is not None
-            and row["instruction_revision"] != note["instruction_revision"])
-
-    def _set_delivery(self, nid: str, delivery: str) -> None:
-        with self.app.db.tx() as tx:
-            tx.execute("UPDATE notifications SET delivery_state = ? WHERE id = ? AND session_id = ?",
-                       (delivery, nid, self.session_id))
-            tx.emit(self.session_id, "notification.state", {"id": nid, "delivery_state": delivery})
-
-    def announcement_feedback(self, nid: str, delivery: str) -> None:
-        """Client reports played / interrupted. Interrupted ones are re-evaluated once."""
-        if delivery not in ("played", "interrupted"):
-            return
-        row = self.app.db.one("SELECT * FROM notifications WHERE id = ? AND session_id = ?",
-                              (nid, self.session_id))
-        if row is None or row["delivery_state"] != "playing":
-            return
-        self._set_delivery(nid, delivery)
-        if delivery == "interrupted" and nid not in self.repeated:
-            self.repeated.add(nid)
-            self.announce(dict(row), attempts=1)
+    # ------------------------------------------------------------ shutdown
+    async def close(self) -> None:
+        """Room deleted: stop open transcriptions and any work still in flight."""
+        for turn in (self.floor.speaker, *self.floor.private.values()):
+            if turn and turn.stt:
+                await turn.stt.abort()
+        for task in (*self.tasks, *self.leases.values()):
+            task.cancel()
 
 
 class App:
@@ -219,7 +161,7 @@ class App:
 
 # ---------------------------------------------------------------- pipeline
 
-def _speaker(db: Database, pid: str) -> sqlite3.Row:
+def _speaker(db: Database, pid: str) -> sqlite3.Row | None:
     return db.one("SELECT * FROM participants WHERE id = ?", (pid,))
 
 
@@ -239,14 +181,21 @@ async def handle_utterance(app: App, session_id: str, pid: str, turn_id: str, mo
     except sqlite3.IntegrityError:
         log.info("duplicate utterance %s/%s ignored", pid, turn_id)
         return
+    speaker = _speaker(app.db, pid)
+    if speaker is None:
+        return
+    if mode == "team" and not await _team_turn(app, room, speaker, turn_id, utterance_id, transcript):
+        return
+    # A private Ask Relay turn, or a team utterance that was really a question for Relay.
+    # Questions are read-only, so they run outside the room lock and never hold up the team.
+    await answer_question(app, room, speaker, utterance_id, transcript)
 
+
+async def _team_turn(app: App, room: Room, speaker: sqlite3.Row, turn_id: str, utterance_id: str,
+                     transcript: str) -> bool:
+    """Interpret and commit a team utterance. Returns True if it was a question for Relay instead."""
+    pid, session_id = speaker["id"], speaker["session_id"]
     async with room.lock:
-        speaker = _speaker(app.db, pid)
-        if speaker is None:
-            return
-        if mode == "ask":
-            await answer_question(app, room, speaker, utterance_id, transcript)
-            return
         for attempt in (1, 2):
             st = state.build_state(app.db, session_id, pid, app.hub.connected_ids(session_id))
             payload = app.llm.llm_input(dict(speaker), transcript, utterance_id, "team", st)
@@ -257,29 +206,27 @@ async def handle_utterance(app: App, session_id: str, pid: str, turn_id: str, mo
                 log.exception("interpretation failed")
                 room.status(pid, "ai", False, str(e))
                 room.notice(pid, "Relay couldn't interpret that, so your update was not applied.")
-                return
+                return False
             if result.classification == "bot_question":
-                await answer_question(app, room, speaker, utterance_id, transcript)
-                return
+                return True
             try:
-                failures, spoken = _commit_team(app, speaker, turn_id, utterance_id, transcript, result)
+                failures = _commit_team(app, speaker, turn_id, utterance_id, transcript, result)
                 break
-            except VersionConflict:
+            except VersionConflict:  # a manual action landed while the model was thinking
                 if attempt == 2:
                     room.notice(pid, "The request changed while you were speaking. Nothing was applied; please repeat.")
-                    return
+                    return False
     if failures:
         room.notice(pid, "Not applied: " + "; ".join(failures))
-    for note in spoken:
-        room.announce(note)
+    return False
 
 
-def _commit_team(app: App, speaker, turn_id: str, utterance_id: str, transcript: str,
-                 result) -> tuple[list[str], list[dict]]:
+def _commit_team(app: App, speaker: sqlite3.Row, turn_id: str, utterance_id: str, transcript: str,
+                 result: llm.TeamResult) -> list[str]:
+    """One transaction: the message plus every valid proposal. Returns why any proposal failed."""
     session_id = speaker["session_id"]
     actor = Actor.from_row(speaker)
     failures: list[str] = []
-    spoken: list[dict] = []
     with app.db.tx() as tx:
         message = {
             "id": new_id("msg"), "utterance_id": utterance_id, "session_id": session_id,
@@ -293,18 +240,17 @@ def _commit_team(app: App, speaker, turn_id: str, utterance_id: str, transcript:
             (message["id"], utterance_id, session_id, speaker["id"], turn_id, transcript,
              message["summary"], "[]", message["timestamp"], "team"))
         tx.emit(session_id, "message.created", {"message": message})
-        ctx = Context(origin="ai", source_message_id=message["id"], utterance_id=utterance_id)
+        ctx = Context(origin="ai", source_message_id=message["id"])
 
         for i, proposal in enumerate(result.proposals):
             if proposal.get("type") == "ask_clarification":
-                spoken.append(_clarify(tx, speaker, proposal))
+                _clarify(tx, speaker, proposal)
                 continue
             mark = len(tx.events)
             tx.execute("SAVEPOINT proposal")
             try:
-                out = execute(tx, actor, {**proposal, "idempotency_key": f"{utterance_id}:{i}"}, ctx)
+                execute(tx, actor, {**proposal, "idempotency_key": f"{utterance_id}:{i}"}, ctx)
                 tx.execute("RELEASE proposal")
-                spoken.extend(out.get("announcements", []))
             except VersionConflict:
                 raise
             except ActionError as e:
@@ -320,38 +266,32 @@ def _commit_team(app: App, speaker, turn_id: str, utterance_id: str, transcript:
                 (now(), session_id, speaker["id"], result.clarification_id, result.clarification_id))]
             if resolved:
                 tx.emit(session_id, "clarification.resolved", {"ids": resolved})
-    return failures, spoken
+    return failures
 
 
-def _clarify(tx: Tx, speaker, proposal: dict) -> dict:
-    ts = datetime.now(UTC)
+def _clarify(tx: Tx, speaker: sqlite3.Row, proposal: dict) -> None:
+    session_id = speaker["session_id"]
     question = str(proposal.get("question", "")).strip() or "Could you clarify that?"
     related = proposal.get("related_request_id")
     if related and not tx.one("SELECT 1 FROM requests WHERE id = ? AND session_id = ?",
-                              (related, speaker["session_id"])):
+                              (related, session_id)):
         related = None
-    cid = new_id("clr")
+    created = datetime.now(UTC)
+    clarification = {
+        "id": new_id("clr"), "participant_id": speaker["id"], "question": question,
+        "related_request_id": related, "created_at": iso(created),
+        "expires_at": iso(created + timedelta(seconds=config.CLARIFICATION_TTL_SECONDS)),
+    }
     tx.execute(
         "INSERT INTO clarifications (id, session_id, participant_id, related_request_id, question,"
         " expires_at, created_at) VALUES (?,?,?,?,?,?,?)",
-        (cid, speaker["session_id"], speaker["id"], related, question,
-         (ts + timedelta(seconds=config.CLARIFICATION_TTL_SECONDS)).isoformat().replace("+00:00", "Z"),
-         now()))
-    text = f"{speaker['display_name']}, {question[0].lower() + question[1:]}" if question else question
-    note = {"id": new_id("ntf"), "session_id": speaker["session_id"], "request_id": related,
-            "instruction_revision": None, "recipient_id": speaker["id"], "message": text,
-            "delivery_state": "queued", "created_at": now()}
-    tx.execute(
-        "INSERT INTO notifications (id, session_id, request_id, instruction_revision, recipient_id,"
-        " message, delivery_state, created_at) VALUES (?,?,?,?,?,?,?,?)", tuple(note.values()))
-    tx.emit(speaker["session_id"], "clarification.created",
-            {"id": cid, "participant_id": speaker["id"], "question": question,
-             "related_request_id": related, "created_at": now(),
-             "expires_at": (ts + timedelta(seconds=config.CLARIFICATION_TTL_SECONDS)).isoformat().replace("+00:00", "Z")})
-    return note
+        (clarification["id"], session_id, speaker["id"], related, question,
+         clarification["expires_at"], clarification["created_at"]))
+    tx.emit(session_id, "clarification.created", clarification)
 
 
-async def answer_question(app: App, room: Room, speaker, utterance_id: str, question: str) -> None:
+async def answer_question(app: App, room: Room, speaker: sqlite3.Row, utterance_id: str,
+                          question: str) -> None:
     """Read-only route. The answer goes only to the asker."""
     session_id, pid = speaker["session_id"], speaker["id"]
     st = state.build_state(app.db, session_id, pid, app.hub.connected_ids(session_id))
@@ -402,7 +342,8 @@ def share_answer(app: App, session_id: str, pid: str, exchange_id: str) -> dict:
     if row is None:
         raise ActionError("not_found", "No such answer.")
     if row["shared_message_id"]:
-        return app.db.one("SELECT * FROM messages WHERE id = ?", (row["shared_message_id"],))
+        return state.serialize_message(
+            app.db, app.db.one("SELECT * FROM messages WHERE id = ?", (row["shared_message_id"],)))
     message = {
         "id": new_id("msg"), "utterance_id": None, "session_id": session_id, "participant_id": pid,
         "turn_id": None, "original_transcript": None,

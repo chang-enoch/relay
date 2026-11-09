@@ -31,28 +31,22 @@ DATABASE_PATH = _env("RELAY_DB", str(BACKEND_DIR / "relay.db"))
 CORS_ORIGINS = [o for o in _env("RELAY_CORS_ORIGINS", "http://localhost:3000").split(",") if o]
 RETENTION_DAYS = int(_env("RELAY_RETENTION_DAYS", "7"))
 CLARIFICATION_TTL_SECONDS = int(_env("RELAY_CLARIFICATION_TTL", "300"))
-# Spoken shared announcements (clarifications, change notices). Off: they appear in the feed instead.
-SPEAK_ANNOUNCEMENTS = _env("RELAY_SPEAK_ANNOUNCEMENTS", "false").lower() in ("1", "true", "yes")
 TURN_LEASE_SECONDS = float(_env("RELAY_TURN_LEASE", "5"))
+
+
+# Which keys each provider needs. Drives the status pills and the startup warning.
+PROVIDER_KEYS = {
+    "audio": ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"),
+    "transcription": ("DEEPGRAM_API_KEY",),
+    "ai": ("GEMINI_API_KEY",),
+    "speech": ("ELEVENLABS_API_KEY",),
+}
 
 
 def provider_status() -> dict[str, bool]:
     """Which providers have credentials configured."""
-    return {
-        "audio": bool(LIVEKIT_URL and LIVEKIT_API_KEY and LIVEKIT_API_SECRET),
-        "transcription": bool(DEEPGRAM_API_KEY),
-        "ai": bool(GEMINI_API_KEY),
-        "speech": bool(ELEVENLABS_API_KEY),
-    }
+    return {name: all(globals()[k] for k in keys) for name, keys in PROVIDER_KEYS.items()}
 
 
 def missing_keys() -> list[str]:
-    names = {
-        "GEMINI_API_KEY": GEMINI_API_KEY,
-        "LIVEKIT_URL": LIVEKIT_URL,
-        "LIVEKIT_API_KEY": LIVEKIT_API_KEY,
-        "LIVEKIT_API_SECRET": LIVEKIT_API_SECRET,
-        "DEEPGRAM_API_KEY": DEEPGRAM_API_KEY,
-        "ELEVENLABS_API_KEY": ELEVENLABS_API_KEY,
-    }
-    return [k for k, v in names.items() if not v]
+    return [k for keys in PROVIDER_KEYS.values() for k in keys if not globals()[k]]

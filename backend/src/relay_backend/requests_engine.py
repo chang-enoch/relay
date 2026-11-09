@@ -2,8 +2,8 @@
 
 Model proposals and manual /actions both go through execute(). It checks schema,
 identity, permissions, recipient, lifecycle transition, expected_version and the
-idempotency key, then writes the request, its audit event, notifications and a
-replay event inside the caller's transaction.
+idempotency key, then writes the request, its audit event and a replay event
+inside the caller's transaction.
 """
 
 import json
@@ -63,7 +63,6 @@ class Actor:
 class Context:
     origin: str = "manual"  # 'ai' or 'manual'
     source_message_id: str | None = None
-    utterance_id: str | None = None
     # Versions as they were when the batch started, so a batch such as accept + complete
     # proposed against one state snapshot validates against that snapshot.
     base_versions: dict[str, int] = field(default_factory=dict)
@@ -142,8 +141,6 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
     is_assignee = req["assignee_id"] == actor.id
     is_requester = req["requester_id"] == actor.id
     manager = actor.can("manage_requests")
-    notify: list[tuple[str | None, str, bool]] = []  # (recipient, message, spoken)
-    desc = before["details"].get("description", "request")
 
     def need(ok: bool, what: str):
         if not ok:
@@ -167,8 +164,6 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
         after["details"].update(changed)
         if any(k in MATERIAL_FIELDS for k in changed):
             _material_change(after, to)
-            if after["assignee_id"]:
-                notify.append((after["assignee_id"], _change_text(tx, after, changed), True))
 
     elif kind == "reassign":
         need(is_requester or manager, "reassign")
@@ -182,10 +177,6 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
         after["assignee_id"] = new_assignee
         after["target_role"] = target_role or (assignee["role"] if assignee else None)
         _material_change(after, to)
-        if assignee:
-            notify.append((assignee["id"],
-                           f"{assignee['display_name']}, you've been assigned: {desc}. Please confirm.",
-                           True))
 
     elif kind == "accept":
         if req["assignee_id"] is None:
@@ -205,9 +196,6 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
             to("open")
         after["assignee_id"] = None
         after["accepted_revision"] = None
-        if req["requester_id"]:
-            reason = f" ({a['reason']})" if a.get("reason") else ""
-            notify.append((req["requester_id"], f"{actor.name} declined: {desc}{reason}", False))
 
     elif kind == "report_progress":
         need(is_assignee, "report progress on")
@@ -227,14 +215,10 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
         to("completed")
         if a.get("note"):
             after["details"]["notes"] = str(a["note"]).strip()
-        if req["requester_id"] and req["requester_id"] != actor.id:
-            notify.append((req["requester_id"], f"Completed by {actor.name}: {desc}", False))
 
     elif kind == "cancel":
         need(is_requester or manager, "cancel")
         to("cancelled")
-        if req["assignee_id"] and req["assignee_id"] != actor.id:
-            notify.append((req["assignee_id"], f"Cancelled by {actor.name}: {desc}", False))
 
     ts = now()
     after["version"] = before["version"] + 1
@@ -249,7 +233,7 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
          after["version"], after["instruction_revision"], after["accepted_revision"], ts,
          after.get("closed_at"), req["id"], before["version"]),
     )
-    return _finish(tx, actor, ctx, kind, before, after, notify)
+    return _finish(tx, actor, ctx, kind, before, after)
 
 
 def _sync_description(old: dict, changed: dict) -> None:
@@ -258,8 +242,8 @@ def _sync_description(old: dict, changed: dict) -> None:
     if "description" in changed or not old.get("description"):
         return
     desc = old["description"]
-    for field in ("quantity", "destination"):
-        before, after = old.get(field), changed.get(field)
+    for name in ("quantity", "destination"):
+        before, after = old.get(name), changed.get(name)
         if before and after and before.casefold() in desc.casefold():
             i = desc.casefold().index(before.casefold())
             desc = desc[:i] + after + desc[i + len(before):]
@@ -273,17 +257,6 @@ def _material_change(after: dict, to) -> None:
     after["accepted_revision"] = None
     if after["status"] != "open":
         to("open")
-
-
-def _change_text(tx: Tx, req: dict, changed: dict) -> str:
-    who = tx.one("SELECT display_name FROM participants WHERE id = ?", (req["assignee_id"],))
-    name = who["display_name"] if who else "Assignee"
-    if "description" in changed:
-        what = changed["description"]
-    else:
-        what = f"{req['details'].get('description', 'the request')}, " + ", ".join(
-            f"{k} now {v}" for k, v in changed.items())
-    return f"Change: {what}. {name}, please confirm."
 
 
 def _create(tx: Tx, actor: Actor, a: dict, ctx: Context) -> dict:
@@ -316,14 +289,11 @@ def _create(tx: Tx, actor: Actor, a: dict, ctx: Context) -> dict:
         (req["id"], req["session_id"], req["source_message_id"], req["requester_id"],
          req["assignee_id"], req["target_role"], dumps(details), "open", 1, 1, None, ts, ts),
     )
-    notify = []
-    if assignee and assignee["id"] != actor.id:
-        notify.append((assignee["id"], f"New request from {actor.name}: {details['description']}", False))
-    return _finish(tx, actor, ctx, "create_request", None, req, notify)
+    return _finish(tx, actor, ctx, "create_request", None, req)
 
 
 def _finish(tx: Tx, actor: Actor, ctx: Context, kind: str, before: dict | None,
-            after: dict, notify: list[tuple[str | None, str, bool]]) -> dict:
+            after: dict) -> dict:
     change = {"type": kind, "actor_id": actor.id, "origin": ctx.origin,
               "source_message_id": ctx.source_message_id}
     event = tx.emit(actor.session_id, "request.changed", {"request": after, "change": change})
@@ -337,23 +307,7 @@ def _finish(tx: Tx, actor: Actor, ctx: Context, kind: str, before: dict | None,
     if ctx.source_message_id:
         _link_message(tx, ctx.source_message_id, after["id"])
 
-    announcements = []
-    for recipient, message, spoken in notify:
-        note = {
-            "id": new_id("ntf"), "session_id": actor.session_id, "request_id": after["id"],
-            "instruction_revision": after["instruction_revision"], "recipient_id": recipient,
-            "message": message, "delivery_state": "queued", "created_at": event["timestamp"],
-        }
-        tx.execute(
-            "INSERT INTO notifications (id, session_id, request_id, instruction_revision,"
-            " recipient_id, message, delivery_state, created_at) VALUES (?,?,?,?,?,?,?,?)",
-            tuple(note.values()),
-        )
-        if recipient:
-            tx.emit(actor.session_id, "notification", note, visibility=recipient)
-        if spoken:
-            announcements.append(note)
-    return {"ok": True, "request": after, "announcements": announcements}
+    return {"ok": True, "request": after}
 
 
 def _link_message(tx: Tx, message_id: str, request_id: str) -> None:

@@ -8,7 +8,8 @@ class Connection:
     def __init__(self, session_id: str, participant_id: str):
         self.session_id = session_id
         self.participant_id = participant_id
-        self.queue: asyncio.Queue[dict] = asyncio.Queue()
+        # None is a sentinel telling the socket's sender to close (the room was deleted).
+        self.queue: asyncio.Queue[dict | None] = asyncio.Queue()
 
 
 class Hub:
@@ -19,7 +20,16 @@ class Hub:
         self.rooms[conn.session_id].add(conn)
 
     def remove(self, conn: Connection) -> None:
-        self.rooms[conn.session_id].discard(conn)
+        conns = self.rooms.get(conn.session_id)
+        if conns is not None:
+            conns.discard(conn)
+            if not conns:
+                del self.rooms[conn.session_id]
+
+    def close_session(self, session_id: str) -> None:
+        """Ask every socket in the room to close."""
+        for conn in self.rooms.pop(session_id, ()):
+            conn.queue.put_nowait(None)
 
     def connected_ids(self, session_id: str) -> set[str]:
         return {c.participant_id for c in self.rooms.get(session_id, ())}

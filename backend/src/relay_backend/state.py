@@ -9,6 +9,24 @@ from .requests_engine import OUTSTANDING, public_participant, public_request
 RECENT_MESSAGES = 15
 
 
+def serialize_message(db: Database, row) -> dict:
+    """A message row as the client sees it; shared answers carry their sources."""
+    m = row_dict(row, ("request_ids",))
+    if m["kind"] == "shared_answer" and m["shared_answer_id"]:
+        ex = db.one("SELECT source_message_ids, created_at FROM bot_exchanges WHERE id = ?",
+                    (m["shared_answer_id"],))
+        if ex:
+            m["sources"] = json.loads(ex["source_message_ids"])
+            m["generated_at"] = ex["created_at"]
+    return m
+
+
+def _outstanding(db: Database, session_id: str) -> list:
+    return db.all(
+        f"SELECT * FROM requests WHERE session_id = ? AND status IN ({','.join('?' * len(OUTSTANDING))})"
+        " ORDER BY created_at", (session_id, *OUTSTANDING))
+
+
 def _names(db: Database, session_id: str) -> dict[str, dict]:
     rows = db.all("SELECT id, display_name, role FROM participants WHERE session_id = ?", (session_id,))
     return {r["id"]: {"name": r["display_name"], "role": r["role"]} for r in rows}
@@ -57,12 +75,7 @@ def build_state(db: Database, session_id: str, speaker_id: str, connected: set[s
             "permissions": p["permissions"], "online": p["id"] in connected,
             "is_creator": p["id"] == session["created_by"],
         })
-    outstanding = [
-        compact_request(public_request(r), names)
-        for r in db.all(
-            f"SELECT * FROM requests WHERE session_id = ? AND status IN ({','.join('?' * len(OUTSTANDING))})"
-            " ORDER BY created_at", (session_id, *OUTSTANDING))
-    ]
+    outstanding = [compact_request(public_request(r), names) for r in _outstanding(db, session_id)]
     msgs = [row_dict(r, ("request_ids",)) for r in db.all(
         "SELECT * FROM messages WHERE session_id = ? ORDER BY timestamp DESC LIMIT ?",
         (session_id, RECENT_MESSAGES))]
@@ -95,10 +108,7 @@ def build_state(db: Database, session_id: str, speaker_id: str, connected: set[s
 
 def get_status(db: Database, session_id: str, **_) -> dict:
     names = _names(db, session_id)
-    rows = db.all(
-        f"SELECT * FROM requests WHERE session_id = ? AND status IN ({','.join('?' * len(OUTSTANDING))})",
-        (session_id, *OUTSTANDING))
-    return {"outstanding": [compact_request(public_request(r), names) for r in rows],
+    return {"outstanding": [compact_request(public_request(r), names) for r in _outstanding(db, session_id)],
             "room_time_utc": now()}
 
 

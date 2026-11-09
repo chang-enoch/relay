@@ -4,10 +4,10 @@ import type { Exchange, Message, Participant } from "@/lib/types";
 import { time } from "./util";
 import type { TalkPhase } from "@/lib/useRoom";
 
-export function AskRelayPanel({ exchange, pending, interim, asking, messages, people, onClose, onShare, onPlay, onJump, onToggleAsk, onType, history, onPick, micReady }: {
+export function AskRelayPanel({ exchange, pending, interim, asking, messages, people, onClose, onShare, onPlay, hasAudio, onJump, onToggleAsk, onType, history, onPick, micReady }: {
   exchange: Exchange | null; pending: boolean; interim: string; asking: TalkPhase;
   messages: Message[]; people: Record<string, Participant>; history: Exchange[];
-  onClose: () => void; onShare: (id: string) => void; onPlay: (x: Exchange) => void; onJump: (id: string) => void;
+  onClose: () => void; onShare: (id: string) => void; onPlay: (id: string) => void; hasAudio: boolean; onJump: (id: string) => void;
   onToggleAsk: () => void; onType: (text: string) => void; onPick: (id: string) => void; micReady: boolean;
 }) {
   const [text, setText] = useState("");
@@ -47,7 +47,7 @@ export function AskRelayPanel({ exchange, pending, interim, asking, messages, pe
               </p>
             )}
             <div className="mt-5 flex flex-wrap gap-2">
-              <button className="btn" disabled={!exchange.audio} onClick={() => onPlay(exchange)}>Play answer</button>
+              <button className="btn" disabled={!hasAudio} onClick={() => onPlay(exchange.id)}>Play answer</button>
               <button className="btn" disabled={!!exchange.shared_message_id} onClick={() => onShare(exchange.id)}>
                 {exchange.shared_message_id ? "Shared to room" : "Share to room"}
               </button>

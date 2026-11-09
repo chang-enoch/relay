@@ -13,8 +13,13 @@ from typing import Any
 MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
+def iso(dt: datetime) -> str:
+    """UTC timestamp as ISO 8601 with a Z suffix, the format stored everywhere."""
+    return dt.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def now() -> str:
-    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return iso(datetime.now(UTC))
 
 
 def new_id(prefix: str) -> str:
@@ -54,7 +59,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 
 
 def purge_expired(conn: sqlite3.Connection, days: int) -> int:
-    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+    cutoff = iso(datetime.now(UTC) - timedelta(days=days))
     cur = conn.execute("DELETE FROM sessions WHERE created_at < ?", (cutoff,))
     return cur.rowcount
 
@@ -100,9 +105,6 @@ class Tx:
             (event["id"], session_id, seq, event["timestamp"], type_, dumps(payload), visibility),
         )
         event["session_id"] = session_id
-        return self._record(event)
-
-    def _record(self, event: dict) -> dict:
         self.events.append(event)
         return event
 

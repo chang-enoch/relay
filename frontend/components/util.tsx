@@ -1,6 +1,6 @@
 import type { Participant } from "@/lib/types";
 
-export const initials = (name?: string) => {
+const initials = (name?: string) => {
   const words = (name ?? "?").trim().split(/\s+/);
   return (words.length > 1 ? words[0][0] + words[1][0] : words[0].slice(0, 2)).toUpperCase() || "?";
 };
@@ -9,7 +9,7 @@ export const time = (iso: string) =>
   new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const TINTS = ["#e1eadf", "#ece6dc", "#e1e8ee", "#ece1ec", "#e8eadb", "#e0ebe8"];
-export const tint = (id: string) => TINTS[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % TINTS.length];
+const tint = (id: string) => TINTS[[...id].reduce((a, c) => a + c.charCodeAt(0), 0) % TINTS.length];
 
 export const byId = (people: Participant[]) => Object.fromEntries(people.map((p) => [p.id, p]));
 

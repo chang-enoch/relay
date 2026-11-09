@@ -4,11 +4,8 @@ CREATE TABLE sessions (
     name             TEXT NOT NULL,
     created_by       TEXT,
     setting          TEXT NOT NULL DEFAULT '',
-    role_definitions TEXT NOT NULL DEFAULT '[]',
-    settings         TEXT NOT NULL DEFAULT '{}',
     event_seq        INTEGER NOT NULL DEFAULT 0,
-    created_at       TEXT NOT NULL,
-    closed_at        TEXT
+    created_at       TEXT NOT NULL
 );
 
 CREATE TABLE participants (
@@ -18,7 +15,6 @@ CREATE TABLE participants (
     role                  TEXT NOT NULL,
     permissions           TEXT NOT NULL DEFAULT '[]',
     authenticated_subject TEXT NOT NULL UNIQUE,
-    connection_state      TEXT NOT NULL DEFAULT 'offline',
     last_seen_sequence    INTEGER,
     created_at            TEXT NOT NULL
 );
@@ -89,17 +85,6 @@ CREATE TABLE clarifications (
     expires_at         TEXT NOT NULL,
     resolved_at        TEXT,
     created_at         TEXT NOT NULL
-);
-
-CREATE TABLE notifications (
-    id                   TEXT PRIMARY KEY,
-    session_id           TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    request_id           TEXT,
-    instruction_revision INTEGER,
-    recipient_id         TEXT,
-    message              TEXT NOT NULL,
-    delivery_state       TEXT NOT NULL DEFAULT 'queued',
-    created_at           TEXT NOT NULL
 );
 
 CREATE TABLE bot_exchanges (

@@ -1,7 +1,7 @@
 [project]
 name = "relay-backend"
 version = "0.1.0"
-description = "Add your description here"
+description = "Relay backend: voice-first team chatroom with AI summaries and request tracking"
 authors = [
     { name = "Enoch Chang", email = "eeknoc@gmail.com" }
 ]
@@ -28,9 +28,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.2.0",
-    "pytest-asyncio>=1.4.1.post1",
 ]
 
 [tool.pytest.ini_options]
-asyncio_default_fixture_loop_scope = "function"
-filterwarnings = ["ignore::SyntaxWarning", "ignore::DeprecationWarning"]
+testpaths = ["tests"]

@@ -21,7 +21,6 @@ export function MessageCard(props: {
   events: RequestEvent[];
   me: string;
   canManage: boolean;
-  liveTranscript?: string;
   onAction: (body: Record<string, unknown>) => void;
   onJump: (id: string) => void;
   highlightFlash: boolean;

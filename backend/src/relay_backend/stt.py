@@ -38,16 +38,18 @@ class LiveTranscription:
             "sample_rate": SAMPLE_RATE, "channels": 1, "interim_results": "true",
             "punctuate": "true",  # no smart_format: it rewrites "six thirty" as "06:30"
         })
-        self._ws = await websockets.connect(
+        ws = await websockets.connect(
             f"wss://api.deepgram.com/v1/listen?{params}",
             additional_headers={"Authorization": f"Token {config.DEEPGRAM_API_KEY}"},
             open_timeout=5,
             ssl=SSL_CONTEXT,
         )
+        # Flush audio buffered while connecting before send() may write directly, so the
+        # first words stay in order. Frames that arrive during the flush join the buffer.
+        while self._pending:
+            await ws.send(self._pending.pop(0))
+        self._ws = ws
         self._reader = asyncio.create_task(self._read())
-        for chunk in self._pending:
-            await self._ws.send(chunk)
-        self._pending.clear()
 
     async def send(self, pcm: bytes) -> None:
         if self._ws is None:
