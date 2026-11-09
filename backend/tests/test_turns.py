@@ -1,6 +1,6 @@
 """Speaking turns: one team speaker at a time, a FIFO queue, and private ask turns."""
 
-from relay_backend.turns import Floor
+from src.turns import Floor
 
 
 def test_first_request_gets_the_floor_and_others_queue():

@@ -3,7 +3,7 @@
 import os
 import tempfile
 
-# relay_backend.main builds a default app at import time, which opens RELAY_DB.
+# src.main builds a default app at import time, which opens RELAY_DB.
 # Point it at a throwaway file before anything imports the package, so tests never
 # touch the developer's live database.
 os.environ["RELAY_DB"] = os.path.join(tempfile.mkdtemp(prefix="relay-tests-"), "import.db")
@@ -12,8 +12,8 @@ import pytest  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
 from helpers import Env  # noqa: E402
-from relay_backend import llm as real_llm  # noqa: E402
-from relay_backend.main import create_app  # noqa: E402
+from src import llm as real_llm  # noqa: E402
+from src.main import create_app  # noqa: E402
 
 
 class StubLLM:

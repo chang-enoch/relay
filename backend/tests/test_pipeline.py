@@ -1,7 +1,7 @@
 """The voice pipeline: utterance -> model proposals -> engine -> one commit."""
 
 from helpers import create, snap, utter
-from relay_backend.llm import TeamResult
+from src.llm import TeamResult
 
 
 def test_utterance_pipeline_and_duplicate_suppression(env):

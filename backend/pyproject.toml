@@ -18,12 +18,8 @@ dependencies = [
     "websockets>=17.4",
 ]
 
-[project.scripts]
-relay-backend = "relay_backend:main"
-
-[build-system]
-requires = ["uv_build>=0.12.3,<0.13.0"]
-build-backend = "uv_build"
+[tool.uv]
+package = false  # an app, not a library: run with `uv run uvicorn src.main:app`
 
 [dependency-groups]
 dev = [
@@ -32,3 +28,4 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,7 +1,7 @@
 """Ask Relay: read-only, private to the asker until shared."""
 
 from helpers import create, snap, utter
-from relay_backend.llm import Answer, TeamResult
+from src.llm import Answer, TeamResult
 
 
 def test_questions_are_read_only_and_private(env):

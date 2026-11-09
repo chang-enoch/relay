@@ -1,6 +1,6 @@
 """Model output handling that doesn't need a model."""
 
-from relay_backend.llm import clean
+from src.llm import clean
 
 
 def test_internal_ids_are_stripped_from_user_facing_text():

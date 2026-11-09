@@ -5,7 +5,7 @@ from itertools import count
 
 from fastapi.testclient import TestClient
 
-from relay_backend.pipeline import App, handle_utterance
+from src.pipeline import App, handle_utterance
 
 _keys = count()
 

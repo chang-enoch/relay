@@ -283,9 +283,3 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
 
 app = create_app()
-
-
-def main() -> None:
-    import uvicorn
-
-    uvicorn.run("relay_backend.main:app", host="127.0.0.1", port=8000)
