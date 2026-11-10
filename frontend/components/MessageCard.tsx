@@ -123,6 +123,7 @@ function RequestLine({ r, people, me, canManage, onAction, events, expanded }: {
   const needsConfirm = active && r.instruction_revision > 1 && r.accepted_revision === null;
   const pending = active && r.status === "open" && assignee && !assignee.online;
   const overdue = active && r.details.estimate_due_at && new Date(r.details.estimate_due_at) < new Date();
+  const declined = r.status === "cancelled" && events.at(-1)?.type === "decline";
   const act = (type: string, extra: Record<string, unknown> = {}) =>
     onAction({ type, request_id: r.id, expected_version: r.version, ...extra });
 
@@ -136,7 +137,7 @@ function RequestLine({ r, people, me, canManage, onAction, events, expanded }: {
     <div className={`mt-3 rounded-lg border px-3 py-2 text-sm ${active ? "border-amber-line bg-white/60" : "border-line bg-white/40 text-muted"}`}>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-medium text-ink">{d.description}</span>
-        <span className="rounded-full bg-sage px-2 py-0.5 text-xs">{STATUS_LABEL[r.status]}</span>
+        <span className="rounded-full bg-sage px-2 py-0.5 text-xs">{declined ? "Declined" : STATUS_LABEL[r.status]}</span>
         {needsConfirm && <span className="rounded-full bg-amber-bg px-2 py-0.5 text-xs text-amber-ink">Changed · awaiting confirmation</span>}
         {!needsConfirm && r.instruction_revision > 1 && <span className="rounded-full bg-sage px-2 py-0.5 text-xs text-moss">Updated</span>}
         {pending && <span className="rounded-full bg-amber-bg px-2 py-0.5 text-xs text-amber-ink">Delivery pending</span>}
@@ -152,7 +153,7 @@ function RequestLine({ r, people, me, canManage, onAction, events, expanded }: {
           {r.status === "open" ? (
             <>
               {(isAssignee || claimable) && <Small onClick={() => act("accept")}>Accept</Small>}
-              {isAssignee && <Small onClick={() => act("decline")}>Decline</Small>}
+              {(isAssignee || claimable) && <Small onClick={() => act("decline")}>Decline</Small>}
             </>
           ) : (
             // Once taken up, only Complete and Cancel remain.

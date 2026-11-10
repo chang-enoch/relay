@@ -33,3 +33,26 @@ def test_unassigned_role_request_can_be_claimed_by_matching_role(env):
     assert act(env, "ben", type="accept", request_id=req["id"], expected_version=1).status_code == 403
     req = act(env, "cy", type="accept", request_id=req["id"], expected_version=1).json()["request"]
     assert req["assignee_id"] == env.pid("cy")
+
+
+def test_decline_allowed_wherever_accept_is(env):
+    # Assigned: only the assignee may decline, and declining cancels the request.
+    req = create(env, who="ana", assignee="ben")
+    assert act(env, "cy", type="decline", request_id=req["id"], expected_version=1).status_code == 403
+    req = act(env, "ben", type="decline", request_id=req["id"], expected_version=1).json()["request"]
+    assert req["status"] == "cancelled" and req["closed_at"]
+    # It is closed: nothing more can happen to it.
+    assert act(env, "ben", type="accept", request_id=req["id"], expected_version=2).status_code != 200
+
+    # Unassigned, for a role: a matching teammate may decline it, which also cancels it.
+    req = create(env, assignee=None, target_role="lighting")
+    assert act(env, "ben", type="decline", request_id=req["id"], expected_version=1).status_code == 403
+    req = act(env, "cy", type="decline", request_id=req["id"], expected_version=1).json()["request"]
+    assert req["status"] == "cancelled"
+
+
+def test_accepted_request_can_still_be_declined(env):
+    req = create(env, assignee="ben")
+    req = act(env, "ben", type="accept", request_id=req["id"], expected_version=1).json()["request"]
+    req = act(env, "ben", type="decline", request_id=req["id"], expected_version=2).json()["request"]
+    assert req["status"] == "cancelled"

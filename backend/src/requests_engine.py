@@ -141,6 +141,9 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
     is_assignee = req["assignee_id"] == actor.id
     is_requester = req["requester_id"] == actor.id
     manager = actor.can("manage_requests")
+    # Anyone who may claim an unassigned request may also decline it.
+    claimable = req["assignee_id"] is None and (
+        not req["target_role"] or req["target_role"].casefold() == actor.role.casefold())
 
     def need(ok: bool, what: str):
         if not ok:
@@ -180,8 +183,7 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
 
     elif kind == "accept":
         if req["assignee_id"] is None:
-            eligible = not req["target_role"] or req["target_role"].casefold() == actor.role.casefold()
-            need(eligible, "accept")
+            need(claimable, "accept")
             after["assignee_id"] = actor.id
         else:
             need(is_assignee, "accept")
@@ -191,11 +193,10 @@ def _request_action(tx: Tx, actor: Actor, kind: str, a: dict, ctx: Context) -> d
                                                 "estimate_due_at": a.get("estimate_due_at")}))
 
     elif kind == "decline":
-        need(is_assignee, "decline")
-        if after["status"] != "open":
-            to("open")
-        after["assignee_id"] = None
-        after["accepted_revision"] = None
+        # The assignee, or an eligible teammate on an unassigned request, turns it down.
+        # A declined request is closed straight away as cancelled.
+        need(is_assignee or claimable, "decline")
+        to("cancelled")
 
     elif kind == "report_progress":
         need(is_assignee, "report progress on")

@@ -19,7 +19,6 @@ interface State {
   snap: Snapshot | null;
   // Who is talking or waiting for Relay's summary (no words are shown, just a bubble).
   activity: Record<string, { phase: "speaking" | "processing"; at: number }>;
-  askInterim: string;
   status: Record<"transcription" | "ai" | "speech", { state: ComponentState; detail?: string }>;
   notices: Notice[];
   openExchange: string | null;
@@ -74,7 +73,6 @@ function applyPersisted(snap: Snapshot, e: ServerEvent): [Snapshot, Partial<Stat
     case "ask.answer":
       s.exchanges = upsert(s.exchanges, p.exchange as Exchange);
       extra.openExchange = p.exchange.id;
-      extra.askInterim = "";
       break;
     case "ask.shared":
       s.exchanges = s.exchanges.map((x) => (x.id === p.exchange_id ? { ...x, shared_message_id: p.message_id } : x));
@@ -119,8 +117,7 @@ function reducer(state: State, a: Action): State {
           return { ...state, activity, snap: { ...state.snap, turn: p as TurnState } };
         }
         case "transcript.interim":
-          if (p.mode === "ask") return { ...state, askInterim: p.text };
-          return state; // team words are not shown while speaking
+          return state; // words are not shown while speaking (team or Ask Relay)
         case "transcript.final": {
           if (p.mode === "ask") return state;
           const activity = { ...state.activity };
@@ -143,7 +140,7 @@ function reducer(state: State, a: Action): State {
 }
 
 const initial: State = {
-  snap: null, activity: {}, askInterim: "", notices: [], openExchange: null, answerAudio: {}, closed: false,
+  snap: null, activity: {}, notices: [], openExchange: null, answerAudio: {}, closed: false,
   status: { transcription: { state: "unknown" }, ai: { state: "unknown" }, speech: { state: "unknown" } },
 };
 

@@ -62,7 +62,7 @@ TEAM_TOOLS: list[tuple[str, str, dict]] = [
         **VERSIONED, "changes": _obj(DETAIL_PROPS)}, ["request_id", "expected_version", "changes"])),
     ("accept", "Speaker accepts a request addressed to them.", _obj({
         **VERSIONED, "estimate": S, "estimate_due_at": S}, ["request_id", "expected_version"])),
-    ("decline", "Speaker declines a request assigned to them.", _obj({
+    ("decline", "Speaker clearly refuses a request assigned to them or addressed to their role. This cancels the request.", _obj({
         **VERSIONED, "reason": S}, ["request_id", "expected_version"])),
     ("report_progress", "Speaker reports starting, progress, or a new estimate.", _obj({
         **VERSIONED, "started": B, "note": S, "estimate": S, "estimate_due_at": S},

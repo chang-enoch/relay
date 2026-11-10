@@ -4,8 +4,8 @@ import type { Exchange, Message, Participant } from "@/lib/types";
 import { time } from "./util";
 import type { TalkPhase } from "@/lib/useRoom";
 
-export function AskRelayPanel({ exchange, pending, interim, asking, messages, people, onClose, onShare, onPlay, hasAudio, onJump, onToggleAsk, onType, history, onPick, micReady }: {
-  exchange: Exchange | null; pending: boolean; interim: string; asking: TalkPhase;
+export function AskRelayPanel({ exchange, pending, asking, messages, people, onClose, onShare, onPlay, hasAudio, onJump, onToggleAsk, onType, history, onPick, micReady }: {
+  exchange: Exchange | null; pending: boolean; asking: TalkPhase;
   messages: Message[]; people: Record<string, Participant>; history: Exchange[];
   onClose: () => void; onShare: (id: string) => void; onPlay: (id: string) => void; hasAudio: boolean; onJump: (id: string) => void;
   onToggleAsk: () => void; onType: (text: string) => void; onPick: (id: string) => void; micReady: boolean;
@@ -24,10 +24,19 @@ export function AskRelayPanel({ exchange, pending, interim, asking, messages, pe
 
       <div className="mt-4 min-h-0 flex-1 overflow-y-auto">
         {pending ? (
-          <>
-            <p className="font-bold">{interim || (asking === "talking" ? "Listening…" : asking === "waiting" ? "Starting…" : "Thinking…")}</p>
-            {asking === "idle" && <p className="mt-3 animate-pulse text-muted">Checking the room…</p>}
-          </>
+          // Like the team feed: no words while speaking, just an animated bubble.
+          <div aria-live="polite">
+            <p className="text-sm">
+              <span className="font-bold">{asking === "idle" ? "Relay" : "You"}</span>{" "}
+              <span className="text-muted">
+                {asking === "talking" ? "are asking Relay" : asking === "waiting" ? "· starting your mic" : "is checking the room"}
+              </span>
+            </p>
+            <div className={`speech-bubble mt-1.5 ${asking === "talking" ? "" : "is-processing"}`} style={{ background: "white" }}
+              aria-label={asking === "talking" ? "Speaking" : "Thinking"}>
+              <span /><span /><span />
+            </div>
+          </div>
         ) : exchange ? (
           <>
             <p className="text-lg font-bold leading-snug">{exchange.question_transcript}</p>

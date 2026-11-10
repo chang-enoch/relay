@@ -249,7 +249,7 @@ export default function RoomPage() {
 
             {askOpen && (
               <div className="fixed inset-x-3 bottom-28 top-20 z-20 lg:static lg:inset-auto lg:z-auto lg:w-96 lg:shrink-0 lg:pb-6">
-                <AskRelayPanel exchange={exchange} pending={room.openExchange === "new"} interim={room.askInterim}
+                <AskRelayPanel exchange={exchange} pending={room.openExchange === "new"}
                   asking={room.asking} messages={snap.messages} people={people} history={snap.exchanges}
                   onClose={() => room.setOpenExchange(null)} onShare={room.share} onPlay={room.playAnswer} hasAudio={!!exchange && exchange.id in room.answerAudio} onJump={jump}
                   onToggleAsk={room.toggleAsk} onType={(t) => room.sendText(t, "ask")} onPick={room.setOpenExchange} micReady={room.micReady} />
