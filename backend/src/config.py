@@ -16,6 +16,32 @@ def _env(name: str, default: str = "") -> str:
 GEMINI_API_KEY = _env("GEMINI_API_KEY")
 GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-3.6-flash")
 
+OPENAI_API_KEY = _env("OPENAI_API_KEY")
+OPENAI_MODEL = _env("OPENAI_MODEL", "gpt-5-mini")
+OPENAI_BASE_URL = _env("OPENAI_BASE_URL")  # optional: any OpenAI-compatible endpoint
+
+ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = _env("ANTHROPIC_MODEL", "claude-opus-5-5")
+ANTHROPIC_EFFORT = _env("ANTHROPIC_EFFORT", "low")  # empty for models without effort support
+
+# Which LLM vendor runs summaries, requests and Ask Relay: its key and its model setting.
+LLM_KEYS = {"gemini": "GEMINI_API_KEY", "openai": "OPENAI_API_KEY", "anthropic": "ANTHROPIC_API_KEY"}
+LLM_MODELS = {"gemini": "GEMINI_MODEL", "openai": "OPENAI_MODEL", "anthropic": "ANTHROPIC_MODEL"}
+
+
+def pick_llm_provider(explicit: str, configured_keys: set[str]) -> str:
+    """LLM_PROVIDER if set; otherwise the first vendor with a key (Gemini when none has one)."""
+    if explicit:
+        if explicit not in LLM_KEYS:
+            raise ValueError(f"LLM_PROVIDER must be one of {', '.join(LLM_KEYS)}, not {explicit!r}")
+        return explicit
+    return next((name for name, key in LLM_KEYS.items() if key in configured_keys), "gemini")
+
+
+LLM_PROVIDER = pick_llm_provider(_env("LLM_PROVIDER").lower(),
+                                 {k for k in LLM_KEYS.values() if globals()[k]})
+LLM_MODEL = globals()[LLM_MODELS[LLM_PROVIDER]]
+
 LIVEKIT_URL = _env("LIVEKIT_URL")
 LIVEKIT_API_KEY = _env("LIVEKIT_API_KEY")
 LIVEKIT_API_SECRET = _env("LIVEKIT_API_SECRET")
@@ -38,7 +64,7 @@ TURN_LEASE_SECONDS = float(_env("RELAY_TURN_LEASE", "5"))
 PROVIDER_KEYS = {
     "audio": ("LIVEKIT_URL", "LIVEKIT_API_KEY", "LIVEKIT_API_SECRET"),
     "transcription": ("DEEPGRAM_API_KEY",),
-    "ai": ("GEMINI_API_KEY",),
+    "ai": (LLM_KEYS[LLM_PROVIDER],),
     "speech": ("ELEVENLABS_API_KEY",),
 }
 

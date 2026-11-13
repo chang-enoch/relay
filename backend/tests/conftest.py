@@ -17,7 +17,7 @@ from src.main import create_app  # noqa: E402
 
 
 class StubLLM:
-    """Replays queued results instead of calling Gemini, and records every prompt."""
+    """Replays queued results instead of calling an LLM, and records every prompt."""
 
     llm_input = staticmethod(real_llm.llm_input)
 

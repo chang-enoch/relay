@@ -110,7 +110,7 @@ def create_app(db_path: str | None = None) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        return {"ok": True, "providers": config.provider_status(), "model": config.GEMINI_MODEL}
+        return {"ok": True, "providers": config.provider_status(), "llm_provider": config.LLM_PROVIDER, "model": config.LLM_MODEL}
 
     @app.post("/sessions")
     async def create_session(body: CreateBody, request: Request):

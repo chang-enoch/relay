@@ -79,7 +79,7 @@ export default function Home() {
           <p>No account needed. Share the generated code with your team. Names and roles are free-form.</p>
           <p className="rounded-lg border border-line bg-sage px-4 py-3 text-ink">
             <strong>Before you join:</strong> while you hold the talk button, your speech is sent to external AI services
-            (Deepgram for transcription, Google Gemini for summaries and requests, ElevenLabs for spoken replies).
+            (Deepgram for transcription, an AI model chosen by the host (Gemini, OpenAI or Claude) for summaries and requests, ElevenLabs for spoken replies).
             Transcripts and summaries are kept for 7 days; raw audio is not stored. Headphones are recommended.
           </p>
         </div>

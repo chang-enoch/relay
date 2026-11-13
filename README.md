@@ -44,10 +44,13 @@ the other. Enable the microphone, then hold **Hold to talk** (or Space):
 - **Turns.** The server grants one team speaker at a time (others queue). Only the granted speaker's
   LiveKit mic is unmuted, and only their PCM audio (sent over the app websocket) is transcribed by
   Deepgram. A disconnected speaker loses the turn after a 5 s lease.
-- **Pipeline** (`pipeline.py`): finalized utterance → dedupe by (participant, turn) → Gemini with
+- **Pipeline** (`pipeline.py`): finalized utterance → dedupe by (participant, turn) → the LLM with
   `name`, `role`, `content`, `mode`, `source_utterance_id` and a compact `current_state` → every
   proposal through the request engine → one atomic commit → broadcast.
   Failures change nothing and tell the speaker privately.
+- **Models** (`llm_providers.py`): Gemini, OpenAI (or any OpenAI-compatible API through
+  `OPENAI_BASE_URL`) or Anthropic, chosen with `LLM_PROVIDER` in `backend/.env`. All three share the
+  same prompts and tool schemas; each adapter only translates function calling.
 - **Request engine** (`requests_engine.py`): the single path for AI proposals and manual actions —
   identity, permissions, lifecycle transitions, `expected_version`, idempotency keys. Material
   changes (description, quantity, destination, instructions, assignee) bump `instruction_revision`,
